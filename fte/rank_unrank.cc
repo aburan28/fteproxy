@@ -13,8 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with fteproxy.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <assert.h>
 #include <rank_unrank.h>
-
+#include <iostream>
 #include "re2/re2.h"
 #include "re2/regexp.h"
 #include "re2/prog.h"
@@ -88,11 +89,11 @@ static class _symbol_not_in_sigma: public std::exception
  */
 DFA::DFA(const std::string dfa_str, const uint32_t max_len)
     : _fixed_slice(max_len),
-      _start_state(0),
+      _START_STATE(0),
       _num_states(0),
       _num_symbols(0)
 {
-    // construct the _start_state, _final_states and symbols/states of our DFA
+    // construct the _START_STATE, _final_states and symbols/states of our DFA
     bool startStateIsntSet = true;
     std::string line;
     std::istringstream my_str_stream(dfa_str);
@@ -113,7 +114,7 @@ DFA::DFA(const std::string dfa_str, const uint32_t max_len)
             }
 
             if ( startStateIsntSet ) {
-                _start_state = current_state;
+                _START_STATE = current_state;
                 startStateIsntSet = false;
             }
         } else if (split_vec.size()==1) {
@@ -129,7 +130,7 @@ DFA::DFA(const std::string dfa_str, const uint32_t max_len)
         }
 
     }
-    _states.push_back( _states.size() ); // extra for the "dead" state
+    _states.push_back( _states.size() );
 
     _num_symbols = _symbols.size();
     _num_states = _states.size();
@@ -188,11 +189,11 @@ DFA::DFA(const std::string dfa_str, const uint32_t max_len)
 
 void DFA::_validate() {
     // ensure DFA has at least one state
-    assert(_states.length()>0);
+    assert (_states.length()>0);
 
     // ensure DFA has at least one symbol
-    assert(_sigma.length()>0);
-    assert(_sigma_reverse.length()>0);
+    assert (_sigma.length()>0);
+    assert (_sigma_reverse.length()>0);
 
     // ensure we have N states, labeled 0,1,..N-1
     array_type_uint32_t1::iterator state;
@@ -212,15 +213,23 @@ void DFA::_validate() {
 
 void DFA::_buildTable() {
     uint32_t i;
+    uint32_t j;
     uint32_t q;
     uint32_t a;
+    uint32_t k;
 
     // ensure our table _T is the correct size
     _T.resize(_num_states);
+    _TT.resize(_num_states);
     for (q=0; q<_num_states; q++) {
         _T.at(q).resize(_fixed_slice+1);
+        _TT.at(q).resize(_fixed_slice+1);
         for (i=0; i<=_fixed_slice; i++) {
             _T.at(q).at(i) = 0;
+            _TT.at(q).at(i).resize(_num_symbols);
+            for (k=0; k<_num_symbols; k++) {
+                _TT.at(q).at(i).at(k) = 0;
+            }
         }
     }
 
@@ -241,55 +250,53 @@ void DFA::_buildTable() {
             }
         }
     }
+
+    for (i=1; i<=_fixed_slice; i++) {
+        for (q=0; q<_delta.size(); q++) {
+            for (a=0; a<_delta.at(0).size(); a++) {
+                mpz_class tmp = 0;
+                uint32_t state = q;
+                for (j=1; j<=a; j++) {
+                    state = _delta.at(q).at(j-1);
+                    tmp += _T.at(state).at(_fixed_slice-i);
+                }
+                _TT.at(q).at(i).at(a) = tmp;
+            }
+        }
+    }
+
 }
 
 
 std::string DFA::unrank( const mpz_class c_in ) {
-    std::string retval;
+    std::string retval = "";
 
     // throw exception if input integer is not in range of pre-computed value
-    mpz_class words_in_slice = getNumWordsInLanguage( _fixed_slice, _fixed_slice );
-    assert( c_in < words_in_slice );
+    // mpz_class words_in_slice = getNumWordsInLanguage( _fixed_slice, _fixed_slice );
+    // assert ( c_in < words_in_slice );
 
     // walk the DFA subtracting values from c until we have our n symbols
     mpz_class c = c_in;
     uint32_t n = _fixed_slice;
-    uint32_t i, q = _start_state;
-    uint32_t chars_left, char_cursor, state_cursor;
-    uint32_t sigma_zero = _sigma.at(0);
-    mpz_class char_index;
+    uint32_t i, q = _START_STATE;
+    uint32_t char_cursor = 0;
     for (i=1; i<=n; i++) {
-        chars_left = n-i;
-        if (_delta_dense.at(q)) {
-            // our optimized version, when _delta[q][i] is equal to n for all symbols i
-            q = _delta.at(q).at(0);
-            if (_T.at(q).at(chars_left)!=0) {
-                char_index = (c / _T.at(q).at(chars_left));
-                char_cursor = char_index.get_ui();
-                retval = retval + _sigma.at(char_cursor);
-                c = c % _T.at(q).at(chars_left);
-            } else {
-                retval += sigma_zero;
+        for (char_cursor=0; char_cursor<_num_symbols-1; char_cursor++) {
+            if (c < _TT.at(q).at(i).at(char_cursor+1)) {
+                break;
             }
-        } else {
-            // traditional goldberg-sipser ranking
-            char_cursor = 0;
-            state_cursor = _delta.at(q).at(char_cursor);
-            while (c >= _T.at(state_cursor).at(chars_left)) {
-                c -= _T.at(state_cursor).at(chars_left);
-                char_cursor += 1;
-                state_cursor =_delta.at(q).at(char_cursor);
-            }
-            retval += _sigma.at(char_cursor);
-            q = state_cursor;
         }
+        c -= _TT.at(q).at(i).at(char_cursor);
+        retval += _sigma.at(char_cursor);
+        q =_delta.at(q).at(char_cursor);
     }
 
+
     // bail if our last state q is not in _final_states
-    if (find(_final_states.begin(),
+    /*if (find(_final_states.begin(),
              _final_states.end(), q)==_final_states.end()) {
         throw invalid_input_exception_not_in_final_states;
-    }
+    }*/
 
     return retval;
 }
@@ -298,15 +305,13 @@ mpz_class DFA::rank( const std::string X_in ) {
     mpz_class retval = 0;
 
     // verify len(X) == _fixe_slice
-    assert(X_in.length()==_fixed_slice);
+    assert (X_in.length()==_fixed_slice);
 
     // walk the DFA, adding values from _T to c
     uint32_t i;
-    uint32_t j;
     uint32_t n = X_in.size();
     uint32_t symbol_as_int;
-    uint32_t q = _start_state;
-    uint32_t state;
+    uint32_t q = _START_STATE;
     for (i=1; i<=n; i++) {
         try {
             symbol_as_int = _sigma_reverse.at(X_in.at(i-1));
@@ -314,17 +319,7 @@ mpz_class DFA::rank( const std::string X_in ) {
             throw symbol_not_in_sigma;
         }
 
-        if (_delta_dense.at(q)) {
-            // our optimized version, when _delta[q][i] is equal to n for all symbols i
-            state = _delta.at(q).at(0);
-            retval += (_T.at(state).at(n-i) * symbol_as_int);
-        } else {
-            // traditional goldberg-sipser ranking
-            for (j=1; j<=symbol_as_int; j++) {
-                state = _delta.at(q).at(j-1);
-                retval += _T.at(state).at(n-i);
-            }
-        }
+        retval += _TT.at(q).at(i).at(symbol_as_int);
         q = _delta.at(q).at(symbol_as_int);
     }
 
@@ -341,9 +336,9 @@ mpz_class DFA::getNumWordsInLanguage( const uint32_t min_word_length,
                                       const uint32_t max_word_length )
 {
     // verify min_word_length <= max_word_length <= _fixed_slice
-    assert(0<=min_word_length);
-    assert(min_word_length<=max_word_length);
-    assert(max_word_length<=_fixed_slice);
+    assert (0<=min_word_length);
+    assert (min_word_length<=max_word_length);
+    assert (max_word_length<=_fixed_slice);
 
     // count the number of words in the language of length
     // at least min_word_length and no greater than max_word_length
@@ -351,7 +346,7 @@ mpz_class DFA::getNumWordsInLanguage( const uint32_t min_word_length,
     for (uint32_t word_length = min_word_length;
             word_length <= max_word_length;
             word_length++) {
-        num_words += _T.at(_start_state).at(word_length);
+        num_words += _T.at(_START_STATE).at(word_length);
     }
     return num_words;
 }

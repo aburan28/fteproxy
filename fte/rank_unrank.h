@@ -41,6 +41,7 @@ typedef std::vector<bool> array_type_bool_t1;
 typedef std::vector<uint32_t> array_type_uint32_t1;
 typedef std::vector< std::vector<uint32_t> > array_type_uint32_t2;
 typedef std::vector< std::vector<mpz_class> > array_type_mpz_t2;
+typedef std::vector< std::vector< std::vector<mpz_class> > > array_type_mpz_t3;
 typedef std::vector< std::string > array_type_string_t1;
 
 class DFA {
@@ -50,7 +51,7 @@ private:
     uint32_t _fixed_slice;
 
     // our DFA start state
-    uint32_t _start_state;
+    uint32_t _START_STATE;
 
     // the number of states in our DFA
     uint32_t _num_states;
@@ -93,6 +94,7 @@ private:
 
     // _T is our cached table, the output of buildTable
     array_type_mpz_t2 _T;
+    array_type_mpz_t3 _TT;
 
 public:
     // The constructor of our rank/urank DFA class
